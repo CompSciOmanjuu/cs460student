@@ -1,21 +1,22 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
-    <title>three.js webgl - decal splatter</title>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
-    <link type="text/css" rel="stylesheet" href="https://threejs.org/examples/main.css">
-  </head>
-  <body>
-
-    <div id="container"></div>
-    <div id="info">
-      <a href="https://threejs.org" target="_blank" rel="noopener">three.js</a> - decal splatter<br/>
-      click to shoot
-    </div>
-
+    <style>
+        html, body { 
+            background-color:#000;
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            overflow: hidden !important;  
+        }
+        canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        }
+    </style>
     <script async src="https://unpkg.com/es-module-shims@1.6.3/dist/es-module-shims.js"></script>
-
+    <script src="https://mrdoob.github.io/stats.js/build/stats.min.js"></script>
     <script type="importmap">
     {
       "imports": {
@@ -26,284 +27,200 @@
     </script>
 
     <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { AnaglyphEffect } from 'three/addons/effects/AnaglyphEffect.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import {Pane} from 'https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js';
+        import { VertexNormalsHelper } from 'three/addons/helpers/VertexNormalsHelper.js';
 
-      import * as THREE from 'three';
+        var renderer, controls, scene, camera;
 
-      import Stats from 'three/addons/libs/stats.module.js';
-      import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+        var anaglypher, poly, rotate_poly, do_rotate_poly;
+        var frog, rotate_frog, do_rotate_frog;
 
-      import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-      import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-      import { DecalGeometry } from 'three/addons/geometries/DecalGeometry.js';
+        var q = new THREE.Quaternion();
+        var qFrog = new THREE.Quaternion(), helper;
+        var blender_old_material, change_material;
+        var stats;
 
-      const container = document.getElementById( 'container' );
 
-      let renderer, scene, camera, stats;
-      let mesh;
-      let raycaster;
-      let line;
+        // SETTINGS and HELPER for TWEAKPANE
+        //
+        window['SCENE'] = {
+            'anaglyph': false,
+            'poly' : null,
+            'rotate_poly' : false,
+            'do_rotate_poly' : function() {
+                window['SCENE']['rotate_poly'] = !window['SCENE']['rotate_poly'];
+            },
+            'frog' : null,
+            'rotate_frog' : false,
+            'do_rotate_frog' : function() {
+                window['SCENE']['rotate_frog'] = !window['SCENE']['rotate_frog'];
+            },
+            'blender_old_material' : null,
+            'change_material' : function() {
+                if (!window['SCENE']['blender_old_material']) {
+                    window['SCENE']['blender_old_material'] = window['SCENE']['frog'].material.clone();
+                    window['SCENE']['frog'].material = new THREE.MeshNormalMaterial();
+                } else {
+                    window['SCENE']['frog'].material = window['SCENE']['blender_old_material'].clone();
+                    window['SCENE']['blender_old_material'] = null;
+                }
+            }
+        };
 
-      const intersection = {
-        intersects: false,
-        point: new THREE.Vector3(),
-        normal: new THREE.Vector3()
-      };
-      const mouse = new THREE.Vector2();
-      const intersects = [];
+        
 
-      const textureLoader = new THREE.TextureLoader();
-      const decalDiffuse = textureLoader.load( 'https://threejs.org/examples/textures/decal/decal-diffuse.png' );
-      decalDiffuse.colorSpace = THREE.SRGBColorSpace;
-      const decalNormal = textureLoader.load( 'https://threejs.org/examples/textures/decal/decal-normal.jpg' );
+        window.onload = function() {
+            // Three.js code goes here
+            scene = new THREE.Scene();
 
-      const decalMaterial = new THREE.MeshPhongMaterial( {
-        specular: 0x444444,
-        map: decalDiffuse,
-        normalMap: decalNormal,
-        normalScale: new THREE.Vector2( 1, 1 ),
-        shininess: 30,
-        transparent: true,
-        depthTest: true,
-        depthWrite: false,
-        polygonOffset: true,
-        polygonOffsetFactor: - 4,
-        wireframe: false
-      } );
+            // setup the camera
+            var fov = 75;
+            var ratio = window.innerWidth / window.innerHeight;
+            var zNear = 0.1;
+            var zFar = 10000;
+            camera = new THREE.PerspectiveCamera( fov, ratio, zNear, zFar );
+            camera.position.set(0, 0, 5);
 
-      const decals = [];
-      let mouseHelper;
-      const position = new THREE.Vector3();
-      const orientation = new THREE.Euler();
-      const size = new THREE.Vector3( 10, 10, 10 );
+            // create renderer and setup the canvas
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize( window.innerWidth, window.innerHeight );
+            document.body.appendChild( renderer.domElement );
 
-      const params = {
-        minScale: 10,
-        maxScale: 20,
-        rotate: true,
-        clear: function () {
+            // stats
+            stats = new Stats();
+            document.body.appendChild(stats.domElement);
 
-          removeDecals();
+            // set up anaglyph
+            anaglypher = new AnaglyphEffect(renderer);
+            anaglypher.setSize(window.innerWidth, window.innerHeight);
 
-        }
-      };
+            // setup lights
+            var ambientLight = new THREE.AmbientLight();
+            scene.add( ambientLight );
 
-      init();
-      animate();
+            var light = new THREE.DirectionalLight( 0xffffff, 5.0 );
+            light.position.set( 10, 70, 10 );
+            scene.add( light );
 
-      function init() {
+            // -------------
 
-        renderer = new THREE.WebGLRenderer( { antialias: true } );
-        renderer.setPixelRatio( window.devicePixelRatio );
-        renderer.setSize( window.innerWidth, window.innerHeight );
-        container.appendChild( renderer.domElement );
+            let loader = new GLTFLoader();
+                let pane = new Pane();
+                var sceneui = pane.addFolder({title: 'Scene'});
+                sceneui.addBinding(window.SCENE, 'anaglyph');
+                sceneui.addBinding(light.position, 'x', {min:-100, max:100, label:'Light X'});
+                sceneui.addBinding(light.position, 'y', {min:-100, max:100, label:'Light Y'});
+                sceneui.addBinding(light.position, 'z', {min:-100, max:100, label:'Light Z'});
+            
+            
+                loader.load( 'poly.glb', function ( gltf ) {
+                    var poly = gltf.scenes[0].children[0];
+                    poly.scale.x = 10;
+                    poly.scale.y = 10;
+                    poly.scale.z = 10;
+                    
+                    scene.add( gltf.scene );
 
-        stats = new Stats();
-        container.appendChild( stats.dom );
+                    window.SCENE.poly = poly;
 
-        scene = new THREE.Scene();
+                    var polyui = pane.addFolder({title:'PolyCam Mesh'});
+                    polyui.addBinding(window.SCENE.poly.material, 'wireframe');
+                    polyui.addButton({title:'rotate!'}).on('click', () => {
+                        window.SCENE.do_rotate_poly();
+                    })
+                }
+                );
+                loader.load( 'frog.glb', function ( gltf ) {
+                    var poly = gltf.scenes[0].children[0];
+                    poly.scale.x = 10;
+                    poly.scale.y = 10;
+                    poly.scale.z = 10;
 
-        camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 1, 1000 );
-        camera.position.z = 120;
+                    poly.quaternion.w = 1;
+                    poly.quaternion.x = 0;
+                    poly.quaternion.y = 0;
+                    poly.quaternion.z = 0;
 
-        const controls = new OrbitControls( camera, renderer.domElement );
-        controls.minDistance = 50;
-        controls.maxDistance = 200;
+                    poly.translateX(2.2);
+                    poly.translateY(.5);
+                    poly.translateZ(-.4);
+                    
+                    scene.add( gltf.scene );
 
-        scene.add( new THREE.AmbientLight( 0x666666 ) );
+                    window.SCENE.frog = poly;
 
-        const dirLight1 = new THREE.DirectionalLight( 0xffddcc, 3 );
-        dirLight1.position.set( 1, 0.75, 0.5 );
-        scene.add( dirLight1 );
+                    var frogui = pane.addFolder({title:'Blender Mesh'});
+                    frogui.addBinding(window.SCENE.frog.material, 'wireframe');
+                    frogui.addButton({title:'rotate!'}).on('click', () => {
+                        window.SCENE.do_rotate_frog();
+                    })
 
-        const dirLight2 = new THREE.DirectionalLight( 0xccccff, 3 );
-        dirLight2.position.set( - 1, 0.75, - 0.5 );
-        scene.add( dirLight2 );
+                    var helper = new VertexNormalsHelper( poly, 0.1, 'blue' );
+                    helper.visible = false;
+                    scene.add(helper);
+                    window.SCENE.frog.helper = helper;
+                    frogui.addBinding(helper, 'visible', {label:'Show normals!'});
 
-        const geometry = new THREE.BufferGeometry();
-        geometry.setFromPoints( [ new THREE.Vector3(), new THREE.Vector3() ] );
+                     frogui.addButton({ title: 'Change Material!' }).on('click', () => {
+                        window.SCENE.change_material();
+                    });
+                }
+                );
 
-        line = new THREE.Line( geometry, new THREE.LineBasicMaterial() );
-        scene.add( line );
-
-        loadLeePerrySmith();
-
-        raycaster = new THREE.Raycaster();
-
-        mouseHelper = new THREE.Mesh( new THREE.BoxGeometry( 1, 1, 10 ), new THREE.MeshNormalMaterial() );
-        mouseHelper.visible = false;
-        scene.add( mouseHelper );
-
-        window.addEventListener( 'resize', onWindowResize );
-
-        let moved = false;
-
-        controls.addEventListener( 'change', function () {
-
-          moved = true;
-
-        } );
-
-        window.addEventListener( 'pointerdown', function () {
-
-          moved = false;
-
-        } );
-
-        window.addEventListener( 'pointerup', function ( event ) {
-
-          if ( moved === false ) {
-
-            checkIntersection( event.clientX, event.clientY );
-
-            if ( intersection.intersects ) shoot();
-
-          }
-
-        } );
-
-        window.addEventListener( 'pointermove', onPointerMove );
-
-        function onPointerMove( event ) {
-
-          if ( event.isPrimary ) {
-
-            checkIntersection( event.clientX, event.clientY );
-
-          }
-
-        }
-
-        function checkIntersection( x, y ) {
-
-          if ( mesh === undefined ) return;
-
-          mouse.x = ( x / window.innerWidth ) * 2 - 1;
-          mouse.y = - ( y / window.innerHeight ) * 2 + 1;
-
-          raycaster.setFromCamera( mouse, camera );
-          raycaster.intersectObject( mesh, false, intersects );
-
-          if ( intersects.length > 0 ) {
-
-            const p = intersects[ 0 ].point;
-            mouseHelper.position.copy( p );
-            intersection.point.copy( p );
-
-            const n = intersects[ 0 ].face.normal.clone();
-            n.transformDirection( mesh.matrixWorld );
-            n.multiplyScalar( 10 );
-            n.add( intersects[ 0 ].point );
-
-            intersection.normal.copy( intersects[ 0 ].face.normal );
-            mouseHelper.lookAt( n );
-
-            const positions = line.geometry.attributes.position;
-            positions.setXYZ( 0, p.x, p.y, p.z );
-            positions.setXYZ( 1, n.x, n.y, n.z );
-            positions.needsUpdate = true;
-
-            intersection.intersects = true;
-
-            intersects.length = 0;
-
-          } else {
-
-            intersection.intersects = false;
-
-          }
-
+            controls = new OrbitControls( camera, renderer.domElement );
+            
+            animate()
         }
 
-        const gui = new GUI();
+        function animate() {
+            requestAnimationFrame(animate);
 
-        gui.add( params, 'minScale', 1, 30 );
-        gui.add( params, 'maxScale', 1, 30 );
-        gui.add( params, 'rotate' );
-        gui.add( params, 'clear' );
-        gui.open();
+            if (window.SCENE.anaglyph === true) {
+                anaglypher.render(scene, camera);
+            } else {
+                renderer.render(scene, camera);
+            }
 
-      }
+            if (window.SCENE.poly) {
+                if (window.SCENE.rotate_poly) {
+                    q = new THREE.Quaternion();
+                    q.setFromAxisAngle(new THREE.Vector3(0,1,0), Math.PI);
 
-      function loadLeePerrySmith() {
+                    window.SCENE.poly.quaternion.slerp( q, 0.01 );
+                } else {
+                    q = new THREE.Quaternion();
 
-        const map = textureLoader.load( 'https://threejs.org/examples/models/gltf/LeePerrySmith/Map-COL.jpg' );
-        map.colorSpace = THREE.SRGBColorSpace;
-        const specularMap = textureLoader.load( 'https://threejs.org/examples/models/gltf/LeePerrySmith/Map-SPEC.jpg' );
-        const normalMap = textureLoader.load( 'https://threejs.org/examples/models/gltf/LeePerrySmith/Infinite-Level_02_Tangent_SmoothUV.jpg' );
+                    window.SCENE.poly.quaternion.slerp( q, 0.01 );
+                }
+            }
 
-        const loader = new GLTFLoader();
+            if (window.SCENE.frog) {
 
-        loader.load( 'https://threejs.org/examples/models/gltf/LeePerrySmith/LeePerrySmith.glb', function ( gltf ) {
+                if (window.SCENE.rotate_frog) {
+                    qFrog = new THREE.Quaternion();
+                    qFrog.setFromAxisAngle(new THREE.Vector3(0,1,0), Math.PI);
 
-          mesh = gltf.scene.children[ 0 ];
-          mesh.material = new THREE.MeshPhongMaterial( {
-            specular: 0x111111,
-            map: map,
-            specularMap: specularMap,
-            normalMap: normalMap,
-            shininess: 25
-          } );
+                    window.SCENE.frog.quaternion.slerp(qFrog, 0.01);
+                    window.SCENE.frog.helper.update();
+                } else {
+                    qFrog = new THREE.Quaternion();
 
-          scene.add( mesh );
-          mesh.scale.set( 10, 10, 10 );
+                    window.SCENE.frog.quaternion.slerp(qFrog, 0.01);
+                    window.SCENE.frog.helper.update();
+                }
+            }
 
-        } );
+            stats.update();
 
-      }
-
-      function shoot() {
-
-        position.copy( intersection.point );
-        orientation.copy( mouseHelper.rotation );
-
-        if ( params.rotate ) orientation.z = Math.random() * 2 * Math.PI;
-
-        const scale = params.minScale + Math.random() * ( params.maxScale - params.minScale );
-        size.set( scale, scale, scale );
-
-        const material = decalMaterial.clone();
-        material.color.setHex( Math.random() * 0xffffff );
-
-        const m = new THREE.Mesh( new DecalGeometry( mesh, position, orientation, size ), material );
-        m.renderOrder = decals.length; // give decals a fixed render order
-
-        decals.push( m );
-        scene.add( m );
-
-      }
-
-      function removeDecals() {
-
-        decals.forEach( function ( d ) {
-
-          scene.remove( d );
-
-        } );
-
-        decals.length = 0;
-
-      }
-
-      function onWindowResize() {
-
-        camera.aspect = window.innerWidth / window.innerHeight;
-        camera.updateProjectionMatrix();
-
-        renderer.setSize( window.innerWidth, window.innerHeight );
-
-      }
-
-      function animate() {
-
-        requestAnimationFrame( animate );
-
-        renderer.render( scene, camera );
-
-        stats.update();
-
-      }
+            // and here..
+            controls.update();
+        }
 
     </script>
-
-  </body>
+    </head>
+    <body></body>
 </html>
